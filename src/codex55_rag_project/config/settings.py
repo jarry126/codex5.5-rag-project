@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     English: All settings read from env vars with RAG_ prefix, supporting DashScope/OpenAI aliases.
     """
 
-    # TODO SettingsConfigDict设置读取的全局规则；Field代表特殊规则，不受全局规则限制
+    # SettingsConfigDict设置读取的全局规则；Field代表特殊规则，不受全局规则限制
 
     # SettingsConfigDict 配置读取规格；真正读取数据的是 BaseSettings。
     # env_file 使用项目根目录的绝对路径，避免 PyCharm 从 src/codex55_rag_project 直接运行时读不到 .env。

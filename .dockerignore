@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+.history
+.idea
+.mypy_cache
+.pytest_cache
+.ruff_cache
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.DS_Store
+tests
+examples
+docs_architecture.md
+AGENTS.md

@@ -1,0 +1,34 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16 # 使用带 pgvector 扩展的 PostgreSQL 16 镜像。
+    environment:  # 初始化数据库名、用户名、密码。
+      POSTGRES_DB: rag
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: rag
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data # 注意：pgdata是docker管理的 named volume，名字叫 pgdata，/var/lib/postgresql/data是postgres容器内部的地址。也就是说真实的数据放在docker管理的某个地方，名字叫pgdata
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro  # 也就是启用 pgvector 扩展。
+    healthcheck: # 检查数据库是否已经准备好接受连接。
+      test: ["CMD-SHELL", "pg_isready -U rag -d rag"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    # 只有写了 build: 的服务才是本地构建。
+    build:
+      context: ..
+      dockerfile: Dockerfile  # 使用Dockerfile构建镜像
+    env_file: # 启动容器时读取宿主机项目根目录的 .env，把里面的变量注入 API 容器环境变量。不是打进镜像。
+      - ../.env
+    environment: # 强制覆盖 API 的数据库连接地址。这里的主机名是 postgres，因为在 compose 网络里，服务名可以当域名用。
+      RAG_POSTGRES_DSN: postgresql+psycopg://rag:rag@postgres:5432/rag
+      RAG_MEDICAL_POSTGRES_DSN: postgresql+psycopg://rag:rag@postgres:5432/rag_medical
+      RAG_MEDICAL_ADMIN_POSTGRES_DSN: postgresql://rag:rag@postgres:5432/postgres
+    ports:
+      - "8000:8000" # 把 API 容器的 8000 暴露到宿主机 8000，所以本机可以访问 http://localhost:8000。
+    depends_on: # 等数据库健康检查通过后，再启动 API。
+      postgres:
+        condition: service_healthy

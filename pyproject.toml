@@ -1,0 +1,44 @@
+[project]
+name = "codex5.5-rag-project"
+version = "0.1.0"
+description = "A production-oriented Retrieval-Augmented Generation service."
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110,<1.0",
+    "langchain-core>=0.3,<1.0",
+    "langchain-openai>=0.3,<1.0",
+    "langchain-postgres>=0.0.17,<1.0",
+    "langchain-text-splitters>=0.3,<1.0",
+    "uvicorn[standard]>=0.27,<1.0",
+    "pydantic>=2.6,<3.0",
+    "pydantic-settings>=2.2,<3.0",
+    "openai>=1.30,<2.0",
+    "psycopg[binary,pool]>=3.1,<4.0",
+    "pypdf>=5.0,<6.0",
+    "tenacity>=8.2,<9.0",
+]
+
+# 可选依赖，安装方式通常为：pip install ".[dev]"
+[project.optional-dependencies]
+dev = [
+    "langfuse>=4.3,<5.0",
+    "pytest>=8.0,<9.0",
+    "ruff>=0.4,<1.0",
+    "mypy>=1.8,<2.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+markers = [
+    "integration: tests that call external services and are skipped unless explicitly enabled",
+]
+
+[tool.ruff]
+line-length = 120  # 每行代码长度目标是 120 字符
+target-version = "py310"  # 按 Python 3.10 的语法规则检查
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+ignore_missing_imports = true

@@ -11,8 +11,8 @@ RUN useradd --create-home --shell /bin/bash appuser
 COPY pyproject.toml README.md /app/
 COPY src /app/src
 
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir .
+RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple --upgrade pip \
+    && pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple .
 
 USER appuser
 

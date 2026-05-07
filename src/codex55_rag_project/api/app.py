@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+import time
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -21,13 +22,19 @@ from codex55_rag_project.api.schemas import (
     PdfIngestionResponse,
     QueryRequest,
     QueryResponse,
+    RagasEvaluationItem,
+    RagasEvaluationRequest,
+    RagasEvaluationResponse,
 )
 from codex55_rag_project.config import get_settings
 from codex55_rag_project.core.models import Document
 from codex55_rag_project.loaders.text import StaticDocumentLoader
-from codex55_rag_project.monitoring import configure_logging, get_logger
-from codex55_rag_project.monitoring.logging import log_duration
+from codex55_rag_project.monitoring import clear_request_id, configure_logging, get_logger, set_request_id
 from codex55_rag_project.security import verify_api_key
+from codex55_rag_project.services.evaluation.ragas_medical import (
+    MedicalRagasCase,
+    evaluate_medical_rag_cases,
+)
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -59,10 +66,27 @@ async def request_logging(request: Request, call_next):  # type: ignore[no-untyp
     # 中文：request id 会回写到响应头，便于把客户端报错、网关日志和服务日志串起来。
     # English: Echo request id in the response so client, gateway, and service logs can be correlated.
     request_id = request.headers.get("x-request-id", str(uuid.uuid4()))
-    with log_duration(logger, "http_request", request_id=request_id):
+    start = time.perf_counter()
+    status_code = 500
+    set_request_id(request_id)
+    try:
         response = await call_next(request)
-    response.headers["x-request-id"] = request_id
-    return response
+        status_code = response.status_code
+        response.headers["x-request-id"] = request_id
+        return response
+    finally:
+        duration_ms = round((time.perf_counter() - start) * 1000, 2)
+        logger.info(
+            "http_request",
+            extra={
+                "event": "http_request",
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": status_code,
+                "duration_ms": duration_ms,
+            },
+        )
+        clear_request_id()
 
 
 @app.get("/healthz", summary="存活检查")
@@ -273,4 +297,92 @@ def medical_query(
             for item in answer.contexts
         ],
         metadata=answer.metadata,
+    )
+
+
+@app.post(
+    "/v1/admin/ragas-evaluations",
+    response_model=RagasEvaluationResponse,
+    dependencies=[Depends(verify_api_key)],
+    summary="Ragas 医疗 RAG 评估",
+    description=(
+        "管理接口，用于直接通过 HTTP 触发 Ragas 评估。"
+        "每条用例都会先走真实医疗 RAG pipeline，从 Postgres/pgvector 检索上下文并生成答案，"
+        "然后用 Ragas 指标评估回答是否有上下文支撑以及是否符合评分说明。"
+        "该接口会调用真实大模型，建议只在本地、测试环境或内部管理网络使用。"
+    ),
+    responses={
+        401: {"description": "API Key 缺失或无效"},
+        502: {"description": "RAG 查询或 Ragas 评分失败"},
+    },
+)
+def evaluate_ragas(
+    request: RagasEvaluationRequest,
+    http_request: Request,
+    state: AppState = Depends(get_app_state),
+) -> RagasEvaluationResponse:
+    """通过接口执行 Ragas 评估。"""
+    request_id = http_request.headers.get("x-request-id", str(uuid.uuid4()))
+    cases = [
+        MedicalRagasCase(
+            question=item.question,
+            tenant_id=item.tenant_id or request.tenant_id,
+            grading_notes=item.grading_notes,
+            reference=item.reference,
+            metadata_filter=item.metadata_filter,
+        )
+        for item in request.cases
+    ]
+    try:
+        results = evaluate_medical_rag_cases(
+            pipeline=state.medical_pipeline,
+            settings=settings,
+            request_id=request_id,
+            cases=cases,
+            include_citations=request.include_citations,
+        )
+    except Exception as exc:
+        logger.exception(
+            "ragas_evaluation_failed",
+            extra={"event": "ragas_evaluation_failed", "request_id": request_id, "case_count": len(cases)},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+
+    logger.info(
+        "ragas_evaluation_completed",
+        extra={
+            "event": "ragas_evaluation_completed",
+            "request_id": request_id,
+            "case_count": len(results),
+        },
+    )
+    return RagasEvaluationResponse(
+        request_id=request_id,
+        total_cases=len(results),
+        results=[
+            RagasEvaluationItem(
+                question=item.question,
+                answer=item.answer,
+                citation_count=item.citation_count,
+                duration_ms=item.duration_ms,
+                metrics=item.metrics,
+                metric_reasons=item.metric_reasons,
+                metadata=item.metadata,
+                citations=[
+                    Citation(
+                        chunk_id=citation["chunk_id"],
+                        document_id=citation["document_id"],
+                        source=citation.get("source"),
+                        score=citation["score"],
+                        text=citation["text"],
+                        metadata=citation["metadata"],
+                    )
+                    for citation in item.citations
+                ],
+            )
+            for item in results
+        ],
     )

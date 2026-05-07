@@ -107,3 +107,45 @@ class MedicalQueryRequest(BaseModel):
     tenant_id: str = Field(default="default", min_length=1)
     question: str = Field(min_length=1)
     metadata_filter: dict[str, Any] | None = None
+
+
+class RagasEvaluationCase(BaseModel):
+    """Ragas 单条评估用例。
+
+    中文：question 会走真实医疗 RAG 查询；reference 是标准答案，grading_notes 是评分说明。
+    """
+
+    question: str = Field(min_length=1)
+    reference: str = ""
+    grading_notes: str = ""
+    tenant_id: str | None = None
+    metadata_filter: dict[str, Any] | None = None
+
+
+class RagasEvaluationRequest(BaseModel):
+    """Ragas 医疗 RAG 评估请求。"""
+
+    tenant_id: str = Field(default="default", min_length=1)
+    cases: list[RagasEvaluationCase] = Field(min_length=1)
+    include_citations: bool = False
+
+
+class RagasEvaluationItem(BaseModel):
+    """Ragas 单条评估结果。"""
+
+    question: str
+    answer: str
+    citation_count: int
+    duration_ms: float
+    metrics: dict[str, float]
+    metric_reasons: dict[str, str]
+    metadata: dict[str, Any]
+    citations: list[Citation] = Field(default_factory=list)
+
+
+class RagasEvaluationResponse(BaseModel):
+    """Ragas 医疗 RAG 评估响应。"""
+
+    request_id: str
+    total_cases: int
+    results: list[RagasEvaluationItem]

@@ -9,4 +9,5 @@ production_rag_service.egg-info/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
+evals/experiments/
 .DS_Store

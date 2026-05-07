@@ -1,69 +1,96 @@
-"""JSON 结构化日志模块。
+"""统一日志模块。
 
-中文：输出 JSON 格式日志，便于日志平台解析和检索；包含 request_id、tenant_id、duration 等字段。
-English: Outputs JSON format logs for easy parsing by log platforms; includes request_id, tenant_id, duration fields.
+中文：输出单行可读日志，并通过 ContextVar 自动携带 request_id，方便本地调试和线上排查。
+English: Outputs readable single-line logs and propagates request_id through ContextVar.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import sys
 import time
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Iterator
 
 
-class JsonFormatter(logging.Formatter):
-    """JSON 格式化器。
+_request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
 
-    中文：将日志记录转换为 JSON 对象，包含时间戳、级别、logger 名、消息和额外字段。
-    English: Converts log records to JSON object with timestamp, level, logger name, message, and extra fields.
-    """
+
+def set_request_id(request_id: str) -> None:
+    """设置当前请求链路 ID。"""
+    _request_id_var.set(request_id)
+
+
+def get_request_id() -> str | None:
+    """获取当前请求链路 ID。"""
+    return _request_id_var.get()
+
+
+def clear_request_id() -> None:
+    """清理当前请求链路 ID。"""
+    _request_id_var.set(None)
+
+
+class RequestIdFilter(logging.Filter):
+    """给每条日志自动补充 request_id。"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = getattr(record, "request_id", None) or get_request_id() or "-"
+        return True
+
+
+class ReadableFormatter(logging.Formatter):
+    """单行可读日志格式化器。"""
+
+    extra_fields = (
+        "event",
+        "method",
+        "path",
+        "status_code",
+        "duration_ms",
+        "tenant_id",
+        "query_count",
+        "candidate_count",
+        "final_count",
+        "ingestion_id",
+        "documents",
+        "pages",
+        "chunks",
+        "case_count",
+    )
 
     def format(self, record: logging.LogRecord) -> str:
-        """格式化日志记录为 JSON。"""
-        payload = {
-            "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
-            "level": record.levelname,
-            "logger": record.name,
-            "message": record.getMessage(),
-        }
-        # 添加常用业务字段；避免把完整请求体或密钥写进日志。
-        for key in (
-            "request_id",
-            "tenant_id",
-            "duration_ms",
-            "event",
-            "query_count",
-            "candidate_count",
-            "final_count",
-            "ingestion_id",
-            "documents",
-            "pages",
-            "chunks",
-        ):
+        base = super().format(record)
+        fields = []
+        for key in self.extra_fields:
             value = getattr(record, key, None)
             if value is not None:
-                payload[key] = value
-        # 添加异常信息
-        if record.exc_info:
-            payload["exception"] = self.formatException(record.exc_info)
-        return json.dumps(payload, ensure_ascii=False)
+                fields.append(f"{key}={value}")
+        if fields:
+            base = f"{base} | {' '.join(fields)}"
+        return base
 
 
 def configure_logging(level: str) -> None:
     """配置全局日志。
 
-    中文：设置 JSON 格式化器，输出到 stdout，便于容器日志收集。
-    English: Sets JSON formatter, outputs to stdout for container log collection.
+    中文：统一输出可读单行日志，避免本地和生产两套格式割裂。
+    English: Uses one readable log format for both local and production.
     """
     handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(JsonFormatter())
+    handler.addFilter(RequestIdFilter())
+    handler.setFormatter(
+        ReadableFormatter(
+            "%(asctime)s %(levelname)s [%(request_id)s] [%(name)s] %(message)s",
+            "%Y-%m-%d %H:%M:%S",
+        )
+    )
     root = logging.getLogger()
     root.handlers.clear()
     root.addHandler(handler)
     root.setLevel(level.upper())
+    _configure_third_party_loggers()
 
 
 def get_logger(name: str) -> logging.Logger:
@@ -84,3 +111,11 @@ def log_duration(logger: logging.Logger, event: str, **fields: object) -> Iterat
     finally:
         duration_ms = round((time.perf_counter() - start) * 1000, 2)
         logger.info(event, extra={"event": event, "duration_ms": duration_ms, **fields})
+
+
+def _configure_third_party_loggers() -> None:
+    """降低第三方库噪声，让业务日志更容易看。"""
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("openai").setLevel(logging.WARNING)
+    logging.getLogger("langsmith.client").setLevel(logging.ERROR)

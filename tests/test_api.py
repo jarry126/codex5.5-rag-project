@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from codex55_rag_project.api.app import app
 from codex55_rag_project.api.dependencies import get_app_state
 from codex55_rag_project.core.models import Answer, Chunk, RetrievedChunk
+from codex55_rag_project.services.evaluation.ragas_medical import MedicalRagasResult
 
 
 class FakeIngestion:
@@ -183,6 +184,72 @@ def test_medical_query_response_contains_rewrite_metadata(monkeypatch) -> None: 
     assert body["metadata"]["retrieval_mode"] == "hybrid_multi_query"
     assert body["metadata"]["candidate_count"] == 3
     assert body["citations"][0]["chunk_id"] == "medical-chunk-1"
+
+
+def test_ragas_evaluation_endpoint_uses_real_pipeline_boundary(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr("codex55_rag_project.security.auth.get_settings", lambda: SimpleNamespace(api_key="secret"))
+    app.dependency_overrides[get_app_state] = lambda: FakeAppState()
+
+    def fake_evaluate_medical_rag_cases(**kwargs):  # type: ignore[no-untyped-def]
+        assert kwargs["pipeline"] is FakeAppState.medical_pipeline
+        assert kwargs["cases"][0].question == "失眠怎么办"
+        assert kwargs["cases"][0].tenant_id == "tenant-a"
+
+        """
+        faithfulness
+        回答是否被检索上下文支撑，越高越不胡编。
+        
+        answer_relevancy
+        回答是否切中用户问题，越高越相关。
+        
+        context_quality
+        从 RAG 库检索出来的上下文质量，越高说明召回内容越有用。
+        
+        reference_correctness
+        回答和标准答案是否一致，越高越接近标准答案。
+        只有你传 reference 时才会计算。
+
+        """
+
+        return [
+            MedicalRagasResult(
+                question="失眠怎么办",
+                answer="medical answer",
+                citation_count=1,
+                duration_ms=12.3,
+                metrics={"faithfulness": 0.95, "answer_relevancy": 0.9, "context_quality": 0.88},
+                metric_reasons={"faithfulness": "", "answer_relevancy": "", "context_quality": ""},
+                metadata={"request_id": "ragas-req-1-1"},
+                citations=[],
+            )
+        ]
+
+    monkeypatch.setattr("codex55_rag_project.api.app.evaluate_medical_rag_cases", fake_evaluate_medical_rag_cases)
+
+    try:
+        response = TestClient(app).post(
+            "/v1/admin/ragas-evaluations",
+            headers={"x-api-key": "secret", "x-request-id": "ragas-req-1"},
+            json={
+                "tenant_id": "tenant-a",
+                "cases": [
+                    {
+                        "question": "失眠怎么办",
+                        "reference": "应结合病因病机和证候表现进行辨证。",
+                        "grading_notes": "回答需要有知识库依据",
+                    }
+                ],
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["request_id"] == "ragas-req-1"
+    assert body["total_cases"] == 1
+    assert body["results"][0]["metrics"]["faithfulness"] == 0.95
+
 
 def test_readyz_real_startup() -> None:
     with TestClient(app) as client:
